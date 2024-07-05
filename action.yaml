@@ -14,12 +14,20 @@ inputs:
     description: 'Run editor tests'
     required: false
     default: 'true'
+  additional-validation-args:
+    description: 'Additional args to pass to validation command'
+    required: false
+    default: ''
   additional-test-args:
     description: 'Additional args to pass to test command'
     required: false
     default: ''
   additional-build-args:
     description: 'Additional args to pass to build command'
+    required: false
+    default: ''
+  output-directory:
+    description: 'The directory to output the build to'
     required: false
     default: ''
   publish-artifacts:
@@ -30,11 +38,29 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - run: |
+        echo "::group::Running Unity Build Pipeline Utility"
+
+        $outputDirectoryArgs = ''
+        $outputDirectory = '${{ env.UNITY_PROJECT_PATH }}/Builds'
+
+        if ("${{ inputs.output-directory }}" -ne "") {
+          $outputDirectoryArgs = ' -buildOutputDirectory ${{ inputs.output-directory }}'
+          $outputDirectory = '${{ inputs.output-directory }}'
+        }
+
+        echo "OutputDirectory: $outputDirectory"
+        echo "OutputDirectoryArgs: $outputDirectoryArgs"
+
+        "OUTPUT_DIRECTORY=$outputDirectory" >> $env:GITHUB_ENV
+        "OUTPUT_DIRECTORY_ARGS=$outputDirectoryArgs" >> $env:GITHUB_ENV
+      shell: pwsh
+
     - uses: xrtk/unity-action@v6
       name: Project Validation
       with:
         log-name: 'project-validation'
-        args: '-quit -nographics -batchmode -executeMethod Utilities.Editor.BuildPipeline.UnityPlayerBuildTools.ValidateProject'
+        args: '-quit -nographics -batchmode -executeMethod Utilities.Editor.BuildPipeline.UnityPlayerBuildTools.ValidateProject ${{ inputs.additional-validation-args }}'
 
     - uses: xrtk/unity-action@v6
       if: ${{ inputs.test == 'true' }}
@@ -49,7 +75,8 @@ runs:
       with:
         log-name: '${{ inputs.build-target }}-Build'
         build-target: '${{ inputs.build-target }}'
-        args: '-quit -nographics -batchmode -executeMethod Utilities.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild ${{ inputs.additional-build-args }}'
+        args: >-
+          -quit -nographics -batchmode -executeMethod Utilities.Editor.BuildPipeline.UnityPlayerBuildTools.StartCommandLineBuild ${{ inputs.additional-build-args }}${{ env.OUTPUT_DIRECTORY_ARGS }}
 
     - name: Ensure Unity process is dead
       if: always()
@@ -77,21 +104,22 @@ runs:
         name: '${{ github.run_number }}.${{ github.run_attempt }}-${{ runner.os }}-${{ inputs.build-target }}-Artifacts'
         path: |
           ${{ env.UNITY_PROJECT_PATH }}/Logs/*.log
-          ${{ env.UNITY_PROJECT_PATH }}/Builds/**/*.log
-          ${{ env.UNITY_PROJECT_PATH }}/Builds/${{ matrix.build-target }}/**/*
-          !${{ env.UNITY_PROJECT_PATH }}/Builds/${{ matrix.build-target }}/*_BackUpThisFolder_ButDontShipItWithYourGame/**
-          !${{ env.UNITY_PROJECT_PATH }}/Builds/${{ matrix.build-target }}/*_BurstDebugInformation_DoNotShip/**
+          ${{ env.OUTPUT_DIRECTORY }}/**/*
 
     - name: Clean Artifacts
       if: ${{ always() && inputs.publish-artifacts == 'true' }}
       run: |
         # Clean Logs
+        Get-ChildItem -Path "${{ env.UNITY_PROJECT_PATH }}" -File -Filter "*.log" -Recurse | ForEach-Object { Write-Host "::debug:: $_" }
         Get-ChildItem -Path "${{ env.UNITY_PROJECT_PATH }}" -File -Filter "*.log" -Recurse | Remove-Item -Force
 
-        $artifacts = "${{ env.UNITY_PROJECT_PATH }}/Builds"
+        # Clean Artifacts
+        $artifacts = "${{ env.OUTPUT_DIRECTORY }}"
         Write-Host "::debug::Build artifacts path: $artifacts"
 
         if (Test-Path -Path $artifacts) {
+          Get-ChildItem -Path $artifacts -Recurse | ForEach-Object { Write-Host "::debug:: $_" }
+
           try {
             Remove-Item $artifacts -Recurse -Force
           } catch {
@@ -100,4 +128,7 @@ runs:
         } else {
           Write-Host "::debug::Artifacts folder not found."
         }
+      shell: pwsh
+
+    - run: echo "::endgroup::"
       shell: pwsh
